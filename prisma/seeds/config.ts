@@ -1,8 +1,5 @@
 export interface SeedConfig {
-  // Limpieza de datos
   cleanDatabase: boolean;
-
-  // Seeds a ejecutar
   seeds: {
     users: boolean;
     courses: boolean;
@@ -13,50 +10,38 @@ export interface SeedConfig {
     reservations: boolean;
     notifications: boolean;
   };
-
-  // Cantidades de datos
   quantities: {
     admins: number;
     teachers: number;
     students: number;
   };
-
-  // Configuración de datos generados
   options: {
-    // Meses de historial para asistencias
     attendanceHistoryMonths: number;
-    // Días futuros para reservas
     reservationFutureDays: number;
-    // Rango de cursos por estudiante [min, max]
     coursesPerStudent: [number, number];
-    // Porcentaje de asistencia promedio
     attendanceRate: number;
-    // Porcentaje de pagos completados
     paymentCompletionRate: number;
   };
 }
 
-// Configuración por defecto
+// CONFIGURACIÓN POR DEFECTO CON TODOS LOS SEEDS ACTIVADOS
 export const defaultConfig: SeedConfig = {
   cleanDatabase: true,
-
   seeds: {
-    users: false,
-    courses: false,
-    schedules: false,
-    enrollments: false,
-    attendance: false,
-    payments: false,
-    reservations: false,
-    notifications: false,
+    users: true,           // ✅ ACTIVADO
+    courses: true,         // ✅ ACTIVADO
+    schedules: true,       // ✅ ACTIVADO
+    enrollments: true,     // ✅ ACTIVADO
+    attendance: true,      // ✅ ACTIVADO
+    payments: true,        // ✅ ACTIVADO
+    reservations: true,    // ✅ ACTIVADO
+    notifications: true,   // ✅ ACTIVADO
   },
-
   quantities: {
     admins: 1,
     teachers: 2,
     students: 10,
   },
-
   options: {
     attendanceHistoryMonths: 1,
     reservationFutureDays: 7,
@@ -66,10 +51,9 @@ export const defaultConfig: SeedConfig = {
   },
 };
 
-// Configuración para desarrollo rápido (menos datos)
+// Configuración para desarrollo
 export const devConfig: SeedConfig = {
   ...defaultConfig,
-  cleanDatabase: true,
   quantities: {
     admins: 1,
     teachers: 3,
@@ -82,10 +66,9 @@ export const devConfig: SeedConfig = {
   },
 };
 
-// Configuración para testing (datos mínimos)
+// Configuración para testing
 export const testConfig: SeedConfig = {
   ...defaultConfig,
-  cleanDatabase: true,
   quantities: {
     admins: 1,
     teachers: 2,

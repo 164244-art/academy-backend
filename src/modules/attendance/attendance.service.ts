@@ -10,14 +10,23 @@ export class AttendanceService {
    */
   async registerBatch(data: RegisterAttendanceDto) {
     const { courseId, classDate, records, recordedBy } = data;
+
+    // VALIDACIÓN DE FECHA FUTURA
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const classDateObj = new Date(classDate);
+    classDateObj.setHours(0, 0, 0, 0);
+
+    if (classDateObj > today) {
+      throw new Error('No se puede registrar asistencia en una fecha futura');
+    }
+
     const dateObj = new Date(classDate);
 
-    // Usamos una transacción para asegurar que todos los registros se guarden o ninguno
     return await prisma.$transaction(async (tx) => {
       const results = [];
 
       for (const record of records) {
-        // Upsert: Crea si no existe, actualiza si existe
         const attendance = await tx.attendance.upsert({
           where: {
             studentId_courseId_classDate: {
@@ -49,7 +58,6 @@ export class AttendanceService {
 
   /**
    * Obtiene la asistencia registrada para un curso y fecha específica.
-   * Útil para que el docente vea lo que ya registró.
    */
   async getByCourseAndDate(courseId: string, date: string) {
     const dateObj = new Date(date);
@@ -73,20 +81,15 @@ export class AttendanceService {
 
   /**
    * Obtiene estadísticas de asistencia de un estudiante.
-   * MEJORADO: Ahora soporta filtro opcional por courseId
    */
   async getStudentStats(studentId: string, courseId?: string): Promise<AttendanceStatsDto> {
     const where: any = { studentId };
 
-    // Agregar filtro de curso si se proporciona
     if (courseId && courseId !== 'undefined') {
       where.courseId = courseId;
     }
 
-    const totalClasses = await prisma.attendance.count({
-      where,
-    });
-
+    const totalClasses = await prisma.attendance.count({ where });
     const attendedClasses = await prisma.attendance.count({
       where: {
         ...where,
@@ -107,12 +110,10 @@ export class AttendanceService {
 
   /**
    * Obtiene el historial detallado de asistencia de un estudiante.
-   * MEJORADO: Ahora soporta filtro opcional por courseId
    */
   async getStudentHistory(studentId: string, courseId?: string) {
     const where: any = { studentId };
 
-    // Agregar filtro de curso si se proporciona
     if (courseId && courseId !== 'undefined') {
       where.courseId = courseId;
     }
@@ -187,7 +188,6 @@ export class AttendanceService {
     const where: any = {};
     if (query.courseId) where.courseId = query.courseId;
     if (query.studentId) {
-      // Si parece UUID, buscar por ID. Si no, buscar por DNI.
       const isUuid = /^[0-9a-fA-F-]{36}$/.test(query.studentId);
       if (isUuid) {
         where.studentId = query.studentId;
@@ -224,7 +224,6 @@ export class AttendanceService {
       orderBy: { classDate: 'desc' },
     });
 
-    // Calcular resumen para el reporte
     const total = attendances.length;
     const present = attendances.filter((a) => a.present).length;
     const rate = total > 0 ? (present / total) * 100 : 0;
@@ -237,6 +236,44 @@ export class AttendanceService {
         absentClasses: total - present,
         attendanceRate: Number(rate.toFixed(2)),
       },
+    };
+  }
+
+  // ============================================
+  // MÉTODOS PARA PRUEBAS UNITARIAS
+  // ============================================
+
+  validateAttendanceStatus(status: string): boolean {
+    const validStatuses = ['PRESENT', 'ABSENT', 'LATE'];
+    return validStatuses.includes(status);
+  }
+
+  validateAttendanceDate(date: Date): boolean {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const inputDate = new Date(date);
+    inputDate.setHours(0, 0, 0, 0);
+    return inputDate <= today;
+  }
+
+  calculateAttendanceStats(records: Array<{ status: string }>): {
+    attendance: number;
+    absences: number;
+    lates: number;
+  } {
+    if (records.length === 0) {
+      return { attendance: 0, absences: 0, lates: 0 };
+    }
+
+    const total = records.length;
+    const present = records.filter(r => r.status === 'PRESENT').length;
+    const absent = records.filter(r => r.status === 'ABSENT').length;
+    const late = records.filter(r => r.status === 'LATE').length;
+
+    return {
+      attendance: (present / total) * 100,
+      absences: (absent / total) * 100,
+      lates: (late / total) * 100,
     };
   }
 }

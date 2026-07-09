@@ -30,9 +30,28 @@ export class AttendanceController {
         return res.status(401).json({ message: 'Usuario no autenticado' });
       }
 
+      const { courseId, classDate, records } = req.body;
+
+      // VALIDACIÓN DE FECHA FUTURA
+      if (classDate) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const classDateObj = new Date(classDate);
+        classDateObj.setHours(0, 0, 0, 0);
+
+        if (classDateObj > today) {
+          return res.status(400).json({
+            success: false,
+            message: 'No se puede registrar asistencia en una fecha futura'
+          });
+        }
+      }
+
       const teacherId = user.id;
       const data: RegisterAttendanceDto = {
-        ...req.body,
+        courseId,
+        classDate,
+        records,
         recordedBy: teacherId,
       };
 
@@ -57,6 +76,7 @@ export class AttendanceController {
       next(error);
     }
   }
+
   // Obtener historial de un estudiante específico por ID
   async getStudentHistoryById(req: Request, res: Response, next: NextFunction) {
     try {
@@ -90,7 +110,6 @@ export class AttendanceController {
 
       const stats = await service.getStudentStats(studentId, courseId as string);
 
-      // Adaptar formato al que espera el frontend
       const response = {
         totalClasses: stats.totalClasses,
         presentClasses: stats.attendedClasses,
@@ -106,6 +125,7 @@ export class AttendanceController {
       next(error);
     }
   }
+
   // GET /api/attendance/student/:studentId/pdf
   async downloadStudentPDF(req: Request, res: Response, next: NextFunction) {
     try {
@@ -117,10 +137,8 @@ export class AttendanceController {
         return res.status(401).json({ message: 'Usuario no autenticado' });
       }
 
-      // Obtener datos del estudiante
       const history = await service.getStudentHistory(studentId, courseId as string);
 
-      // Filtrar por fechas si se proporcionan
       let filteredHistory = history;
       if (startDate || endDate) {
         filteredHistory = history.filter((record: any) => {
@@ -131,7 +149,6 @@ export class AttendanceController {
         });
       }
 
-      // Calcular estadísticas
       const totalClasses = filteredHistory.length;
       const presentClasses = filteredHistory.filter((r: any) => r.present).length;
       const absentClasses = totalClasses - presentClasses;
@@ -144,7 +161,6 @@ export class AttendanceController {
         attendanceRate: Number(attendanceRate.toFixed(2)),
       };
 
-      // Obtener info del estudiante
       const studentInfo = filteredHistory[0]?.student || {
         firstName: 'N/A',
         lastName: '',
@@ -152,7 +168,6 @@ export class AttendanceController {
         email: 'N/A',
       };
 
-      // Generar PDF
       await pdfService.generateAttendancePDF(
         {
           student: studentInfo,
@@ -177,7 +192,6 @@ export class AttendanceController {
   }
 
   // Descargar PDF de reporte general
-  // GET /api/attendance/report/pdf
   async downloadReportPDF(req: Request, res: Response, next: NextFunction) {
     try {
       const { courseId, studentId, startDate, endDate } = req.query;
@@ -187,7 +201,6 @@ export class AttendanceController {
         return res.status(401).json({ message: 'Usuario no autenticado' });
       }
 
-      // Obtener datos del reporte
       const reportData = await service.getReport({
         courseId: courseId as string,
         studentId: studentId as string,
@@ -195,7 +208,6 @@ export class AttendanceController {
         endDate: endDate as string,
       });
 
-      // Generar PDF
       await pdfService.generateMultiStudentPDF(
         {
           attendances: reportData.attendances,
@@ -217,6 +229,7 @@ export class AttendanceController {
       next(error);
     }
   }
+
   // Estadísticas (Estudiante)
   async getMyStats(req: Request, res: Response, next: NextFunction) {
     try {

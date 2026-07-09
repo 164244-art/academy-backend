@@ -118,8 +118,8 @@ model Payment {
   dueDate       DateTime?     @map("due_date") @db.Date
   status        PaymentStatus @default(PENDING)
   paymentMethod String?       @map("payment_method") @db.VarChar(30)
-  receiptNumber String?       @unique @map("receipt_number") @db.VarChar(20)
-  notes         String?
+  receiptNumber String?       @unique @map("receipt_number") @db.VarChar(50)  // ← Cambiado de 20 a 50
+  notes         String?       @db.Text  // ← Cambiado a Text para textos largos
   recordedBy    String?       @map("recorded_by") @db.Uuid
   createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
