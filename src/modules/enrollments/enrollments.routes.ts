@@ -22,6 +22,9 @@ router.get('/available/:courseId', controller.getAvailableStudents.bind(controll
 // Obtener mis matrículas (Estudiante)
 router.get('/my-enrollments', controller.getMyEnrollments.bind(controller));
 
+// ✅ RUTA NUEVA: Obtener inscripciones de un estudiante específico
+router.get('/student/:studentId', controller.getEnrollmentsByStudent.bind(controller));
+
 // Listar estudiantes matriculados por curso
 router.get('/course/:courseId', controller.getEnrolledStudents.bind(controller));
 

@@ -1,4 +1,4 @@
-// src/modules/payments/services/paymentService.ts
+// academy-backend/src/modules/reservations/payments.service.ts
 import { PrismaClient, PaymentStatus } from '@prisma/client';
 import { AppError } from '../../utils/errors';
 
@@ -32,8 +32,38 @@ interface PaymentFilters {
   endDate?: string;
 }
 
+// ✅ Obtener el monto total de la pensión del estudiante
+export const getStudentMonthlyPayment = async (studentId: string): Promise<number> => {
+  const enrollments = await prisma.enrollment.findMany({
+    where: {
+      studentId,
+      status: 'ACTIVE',
+    },
+    include: {
+      course: true,
+    },
+  });
+
+  if (enrollments.length === 0) {
+    throw new AppError('El estudiante no tiene cursos activos', 404);
+  }
+
+  const total = enrollments.reduce((sum, enrollment) => {
+    return sum + Number(enrollment.course.monthlyPrice);
+  }, 0);
+
+  return total;
+};
+
+// ✅ PAG-01 + PAG-02: Crear pago con validaciones
 export const createPayment = async (data: CreatePaymentDto) => {
   const { studentId, amount, concept, dueDate, paymentMethod, notes, status, recordedBy } = data;
+
+  console.log('📊 PAG-01/PAG-02 DEBUG:');
+  console.log('  studentId:', studentId);
+  console.log('  amount:', amount);
+  console.log('  status:', status);
+  console.log('  paymentMethod:', paymentMethod);
 
   // Validar que el estudiante existe
   const student = await prisma.user.findUnique({
@@ -42,6 +72,70 @@ export const createPayment = async (data: CreatePaymentDto) => {
 
   if (!student || student.role !== 'STUDENT') {
     throw new AppError('Estudiante no encontrado', 404);
+  }
+
+  // ✅ PAG-01: Validar el monto según método de pago (solo si es PAID)
+  if (status === 'PAID') {
+    const monthlyAmount = await getStudentMonthlyPayment(studentId);
+    
+    const exactPaymentMethods = ['TARJETA', 'TRANSFERENCIA', 'YAPE', 'PLIN'];
+    const metodo = paymentMethod?.toUpperCase() || '';
+    
+    if (exactPaymentMethods.includes(metodo)) {
+      if (amount !== monthlyAmount) {
+        throw new AppError(
+          `El monto debe ser EXACTO (S/ ${monthlyAmount}) para pagos con ${paymentMethod}`,
+          400
+        );
+      }
+    } else if (metodo === 'EFECTIVO') {
+      if (amount < monthlyAmount) {
+        throw new AppError(
+          `El monto pagado (S/ ${amount}) es insuficiente. El monto de la pensión es S/ ${monthlyAmount}`,
+          400
+        );
+      }
+      if (amount > monthlyAmount) {
+        const vuelto = amount - monthlyAmount;
+        console.log(`💰 Vuelto: S/ ${vuelto.toFixed(2)}`);
+      }
+    } else {
+      if (amount < monthlyAmount) {
+        throw new AppError(
+          `El monto pagado (S/ ${amount}) es insuficiente. El monto de la pensión es S/ ${monthlyAmount}`,
+          400
+        );
+      }
+    }
+
+    // ✅ PAG-02: Verificar pagos duplicados en el mismo periodo
+    const firstDay = new Date();
+    firstDay.setUTCDate(1);
+    firstDay.setUTCHours(0, 0, 0, 0);
+    
+    const lastDay = new Date(firstDay);
+    lastDay.setUTCMonth(lastDay.getUTCMonth() + 1);
+
+    const existingPayment = await prisma.payment.findFirst({
+      where: {
+        studentId,
+        concept,
+        status: 'PAID',
+        paymentDate: {
+          gte: firstDay,
+          lt: lastDay,
+        },
+      },
+    });
+
+    if (existingPayment) {
+      throw new AppError(
+        `⚠️ Ya existe un pago registrado para "${concept}" en este periodo. 
+         Fecha: ${existingPayment.paymentDate.toLocaleDateString()}
+         Monto: S/ ${existingPayment.amount}`,
+        409
+      );
+    }
   }
 
   // Generar número de recibo si el pago está marcado como PAID
@@ -81,6 +175,7 @@ export const createPayment = async (data: CreatePaymentDto) => {
     },
   });
 
+  console.log('✅ Pago registrado:', payment.id);
   return payment;
 };
 
@@ -170,7 +265,6 @@ export const updatePayment = async (paymentId: string, data: UpdatePaymentDto) =
     throw new AppError('Pago no encontrado', 404);
   }
 
-  // Si se cambia a PAID y no tiene receiptNumber, generarlo
   let receiptNumber = data.receiptNumber;
   if (data.status === 'PAID' && !payment.receiptNumber && !receiptNumber) {
     const count = await prisma.payment.count();

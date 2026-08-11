@@ -1,33 +1,41 @@
-// src\modules\attendance\attendance.service.ts
+// academy-backend/src/modules/attendance/attendance.service.ts
+
 import { PrismaClient } from '@prisma/client';
-import { RegisterAttendanceDto, AttendanceStatsDto } from './attendance.types';
+import { 
+  RegisterAttendanceDto, 
+  AttendanceStatsDto, 
+  FullRosterAttendance, 
+  AttendanceRecord,
+  AttendanceStatusType,
+} from './attendance.types';
 
 const prisma = new PrismaClient();
 
 export class AttendanceService {
-  /**
-   * Registra o actualiza la asistencia de múltiples estudiantes para un curso y fecha.
-   */
+  // ============================================================
+  // 📌 REGISTRAR ASISTENCIA - SIN TRANSACCIÓN
+  // ============================================================
   async registerBatch(data: RegisterAttendanceDto) {
     const { courseId, classDate, records, recordedBy } = data;
 
-    // VALIDACIÓN DE FECHA FUTURA
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const classDateObj = new Date(classDate);
-    classDateObj.setHours(0, 0, 0, 0);
+    const dateObj = new Date(classDate + 'T00:00:00.000Z');
 
-    if (classDateObj > today) {
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+
+    if (dateObj > today) {
       throw new Error('No se puede registrar asistencia en una fecha futura');
     }
 
-    const dateObj = new Date(classDate);
+    const results = [];
 
-    return await prisma.$transaction(async (tx) => {
-      const results = [];
+    for (const record of records) {
+      const notes = record.status === 'PERMIT' 
+        ? `${record.notes || ''} [PERMISO]`.trim() 
+        : record.notes || '';
 
-      for (const record of records) {
-        const attendance = await tx.attendance.upsert({
+      try {
+        const existing = await prisma.attendance.findUnique({
           where: {
             studentId_courseId_classDate: {
               studentId: record.studentId,
@@ -35,36 +43,58 @@ export class AttendanceService {
               classDate: dateObj,
             },
           },
-          update: {
-            present: record.present,
-            notes: record.notes,
-            recordedBy: recordedBy,
-          },
-          create: {
-            studentId: record.studentId,
-            courseId: courseId,
-            classDate: dateObj,
-            present: record.present,
-            notes: record.notes,
-            recordedBy: recordedBy,
-          },
         });
-        results.push(attendance);
-      }
 
-      return results;
-    });
+        let attendance;
+
+        if (existing) {
+          attendance = await prisma.attendance.update({
+            where: {
+              studentId_courseId_classDate: {
+                studentId: record.studentId,
+                courseId: courseId,
+                classDate: dateObj,
+              },
+            },
+            data: {
+              status: record.status,
+              notes: notes,
+              recordedBy: recordedBy,
+            },
+          });
+        } else {
+          attendance = await prisma.attendance.create({
+            data: {
+              studentId: record.studentId,
+              courseId: courseId,
+              classDate: dateObj,
+              status: record.status,
+              notes: notes,
+              recordedBy: recordedBy,
+            },
+          });
+        }
+
+        results.push(attendance);
+      } catch (error) {
+        console.error(`❌ Error procesando estudiante ${record.studentId}:`, error);
+        throw error;
+      }
+    }
+
+    return results;
   }
 
-  /**
-   * Obtiene la asistencia registrada para un curso y fecha específica.
-   */
-  async getByCourseAndDate(courseId: string, date: string) {
-    const dateObj = new Date(date);
-    return await prisma.attendance.findMany({
+  // ============================================================
+  // 📌 OBTENER ROSTER COMPLETO
+  // ============================================================
+  async getFullRosterWithAttendance(courseId: string, date: string): Promise<FullRosterAttendance[]> {
+    const dateObj = new Date(date + 'T00:00:00.000Z');
+
+    const enrollments = await prisma.enrollment.findMany({
       where: {
         courseId,
-        classDate: dateObj,
+        status: 'ACTIVE',
       },
       include: {
         student: {
@@ -73,52 +103,78 @@ export class AttendanceService {
             firstName: true,
             lastName: true,
             dni: true,
+            email: true,
           },
         },
       },
     });
-  }
 
-  /**
-   * Obtiene estadísticas de asistencia de un estudiante.
-   */
-  async getStudentStats(studentId: string, courseId?: string): Promise<AttendanceStatsDto> {
-    const where: any = { studentId };
-
-    if (courseId && courseId !== 'undefined') {
-      where.courseId = courseId;
-    }
-
-    const totalClasses = await prisma.attendance.count({ where });
-    const attendedClasses = await prisma.attendance.count({
+    const existingAttendances = await prisma.attendance.findMany({
       where: {
-        ...where,
-        present: true,
+        courseId,
+        classDate: dateObj,
       },
     });
 
-    const attendancePercentage =
-      totalClasses > 0 ? Number(((attendedClasses / totalClasses) * 100).toFixed(2)) : 0;
+    return enrollments.map((enrollment) => {
+      const attendanceRecord = existingAttendances.find(
+        (att: any) => att.studentId === enrollment.student.id
+      );
+
+      let status: AttendanceStatusType | null = null;
+      
+      if (attendanceRecord) {
+        status = attendanceRecord.status as AttendanceStatusType;
+      }
+
+      return {
+        studentId: enrollment.student.id,
+        student: enrollment.student,
+        status: status,
+        notes: attendanceRecord ? attendanceRecord.notes : null,
+        id: attendanceRecord ? attendanceRecord.id : null,
+        classDate: attendanceRecord ? attendanceRecord.classDate : dateObj,
+        recordedBy: attendanceRecord ? attendanceRecord.recordedBy : null,
+      };
+    });
+  }
+
+  // ============================================================
+  // 📌 ESTADÍSTICAS DE ESTUDIANTE
+  // ============================================================
+  async getStudentStats(studentId: string, courseId?: string): Promise<AttendanceStatsDto> {
+    const where: any = { studentId };
+    if (courseId && courseId !== 'undefined') where.courseId = courseId;
+
+    const allRecords = await prisma.attendance.findMany({
+      where,
+      orderBy: { classDate: 'desc' },
+    });
+
+    const totalClasses = allRecords.length;
+    const presentClasses = allRecords.filter((record: any) => record.status === 'PRESENT').length;
+    const permits = allRecords.filter((record: any) => record.status === 'PERMIT').length;
+    const absences = allRecords.filter((record: any) => record.status === 'ABSENT').length;
 
     return {
       totalClasses,
-      attendedClasses,
-      attendancePercentage,
-      absences: totalClasses - attendedClasses,
+      attendedClasses: presentClasses,
+      attendancePercentage: totalClasses > 0 ? Number(((presentClasses / totalClasses) * 100).toFixed(2)) : 0,
+      absences,
+      permits,
     };
   }
 
-  /**
-   * Obtiene el historial detallado de asistencia de un estudiante.
-   */
-  async getStudentHistory(studentId: string, courseId?: string) {
+  // ============================================================
+  // 📌 HISTORIAL DE ESTUDIANTE (CORREGIDO)
+  // ============================================================
+  async getStudentHistory(studentId: string, courseId?: string): Promise<AttendanceRecord[]> {
     const where: any = { studentId };
+    if (courseId && courseId !== 'undefined') where.courseId = courseId;
 
-    if (courseId && courseId !== 'undefined') {
-      where.courseId = courseId;
-    }
+    console.log('📡 getStudentHistory - Buscando registros para:', { studentId, courseId });
 
-    return await prisma.attendance.findMany({
+    const results = await prisma.attendance.findMany({
       where,
       include: {
         course: {
@@ -146,39 +202,52 @@ export class AttendanceService {
       },
       orderBy: { classDate: 'desc' },
     });
+
+    console.log('📊 getStudentHistory - Registros encontrados:', results.length);
+    if (results.length > 0) {
+      console.log('📊 Primer registro:', JSON.stringify(results[0], null, 2));
+    }
+
+    return results.map((record: any): AttendanceRecord => {
+      return {
+        ...record,
+        status: record.status as AttendanceStatusType,
+      };
+    });
   }
 
-  /**
-   * Obtiene estadísticas generales o filtradas para admin/docente
-   */
+  // ============================================================
+  // 📌 ESTADÍSTICAS GENERALES
+  // ============================================================
   async getStats(query: { courseId?: string; startDate?: string; endDate?: string }) {
     const where: any = {};
     if (query.courseId) where.courseId = query.courseId;
+
     if (query.startDate || query.endDate) {
       where.classDate = {};
-      if (query.startDate) where.classDate.gte = new Date(query.startDate);
-      if (query.endDate) where.classDate.lte = new Date(query.endDate);
+      if (query.startDate) where.classDate.gte = new Date(query.startDate + 'T00:00:00.000Z');
+      if (query.endDate) where.classDate.lte = new Date(query.endDate + 'T00:00:00.000Z');
     }
 
-    const totalClasses = await prisma.attendance.count({ where });
-    const attendedClasses = await prisma.attendance.count({
-      where: { ...where, present: true },
-    });
+    const allRecords = await prisma.attendance.findMany({ where });
 
-    const attendancePercentage =
-      totalClasses > 0 ? Number(((attendedClasses / totalClasses) * 100).toFixed(2)) : 0;
+    const totalClasses = allRecords.length;
+    const present = allRecords.filter((record: any) => record.status === 'PRESENT').length;
+    const permits = allRecords.filter((record: any) => record.status === 'PERMIT').length;
+    const absences = allRecords.filter((record: any) => record.status === 'ABSENT').length;
 
     return {
       totalClasses,
-      attendedClasses,
-      attendanceRate: attendancePercentage,
-      absences: totalClasses - attendedClasses,
+      present,
+      permits,
+      absences,
+      attendanceRate: totalClasses > 0 ? Number(((present / totalClasses) * 100).toFixed(2)) : 0,
     };
   }
 
-  /**
-   * Genera un reporte detallado de asistencia
-   */
+  // ============================================================
+  // 📌 REPORTE
+  // ============================================================
   async getReport(query: {
     courseId?: string;
     studentId?: string;
@@ -187,6 +256,7 @@ export class AttendanceService {
   }) {
     const where: any = {};
     if (query.courseId) where.courseId = query.courseId;
+
     if (query.studentId) {
       const isUuid = /^[0-9a-fA-F-]{36}$/.test(query.studentId);
       if (isUuid) {
@@ -195,13 +265,14 @@ export class AttendanceService {
         where.student = { dni: { contains: query.studentId } };
       }
     }
+
     if (query.startDate || query.endDate) {
       where.classDate = {};
-      if (query.startDate) where.classDate.gte = new Date(query.startDate);
-      if (query.endDate) where.classDate.lte = new Date(query.endDate);
+      if (query.startDate) where.classDate.gte = new Date(query.startDate + 'T00:00:00.000Z');
+      if (query.endDate) where.classDate.lte = new Date(query.endDate + 'T00:00:00.000Z');
     }
 
-    const attendances = await prisma.attendance.findMany({
+    const results = await prisma.attendance.findMany({
       where,
       include: {
         student: {
@@ -224,56 +295,40 @@ export class AttendanceService {
       orderBy: { classDate: 'desc' },
     });
 
+    const attendances = results.map((record: any): any => {
+      return {
+        ...record,
+        status: record.status as AttendanceStatusType,
+        present: record.status === 'PRESENT',
+      };
+    });
+
     const total = attendances.length;
-    const present = attendances.filter((a) => a.present).length;
-    const rate = total > 0 ? (present / total) * 100 : 0;
+    const present = attendances.filter((record) => record.status === 'PRESENT').length;
+    const permits = attendances.filter((record) => record.status === 'PERMIT').length;
+    const absences = attendances.filter((record) => record.status === 'ABSENT').length;
 
     return {
       attendances,
       stats: {
         totalClasses: total,
         presentClasses: present,
-        absentClasses: total - present,
-        attendanceRate: Number(rate.toFixed(2)),
+        permitClasses: permits,
+        absentClasses: absences,
+        attendanceRate: total > 0 ? Number(((present / total) * 100).toFixed(2)) : 0,
       },
     };
   }
 
-  // ============================================
-  // MÉTODOS PARA PRUEBAS UNITARIAS
-  // ============================================
-
   validateAttendanceStatus(status: string): boolean {
-    const validStatuses = ['PRESENT', 'ABSENT', 'LATE'];
-    return validStatuses.includes(status);
+    return ['PRESENT', 'PERMIT', 'ABSENT'].includes(status);
   }
 
   validateAttendanceDate(date: Date): boolean {
     const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    today.setUTCHours(0, 0, 0, 0);
     const inputDate = new Date(date);
-    inputDate.setHours(0, 0, 0, 0);
+    inputDate.setUTCHours(0, 0, 0, 0);
     return inputDate <= today;
-  }
-
-  calculateAttendanceStats(records: Array<{ status: string }>): {
-    attendance: number;
-    absences: number;
-    lates: number;
-  } {
-    if (records.length === 0) {
-      return { attendance: 0, absences: 0, lates: 0 };
-    }
-
-    const total = records.length;
-    const present = records.filter(r => r.status === 'PRESENT').length;
-    const absent = records.filter(r => r.status === 'ABSENT').length;
-    const late = records.filter(r => r.status === 'LATE').length;
-
-    return {
-      attendance: (present / total) * 100,
-      absences: (absent / total) * 100,
-      lates: (late / total) * 100,
-    };
   }
 }

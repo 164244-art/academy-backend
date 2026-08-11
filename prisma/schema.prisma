@@ -1,3 +1,5 @@
+// academy-backend/prisma/schema.prisma
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -6,6 +8,75 @@ datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
+}
+
+// ============================================================
+// 📌 ENUM DE ASISTENCIA - USAR EL EXISTENTE
+// ============================================================
+enum AttendanceStatus {
+  PRESENT
+  PERMIT
+  ABSENT
+}
+
+// ============================================================
+// 📌 MODELO ATTENDANCE
+// ============================================================
+model Attendance {
+  id         String           @id @default(uuid()) @db.Uuid
+  studentId  String           @map("student_id") @db.Uuid
+  courseId   String           @map("course_id") @db.Uuid
+  classDate  DateTime         @map("class_date") @db.Date
+  status     AttendanceStatus @default(ABSENT)
+  notes      String?
+  recordedBy String?          @map("recorded_by") @db.Uuid
+  createdAt  DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  course     Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  recorder   User?            @relation("TeacherRecordedAttendance", fields: [recordedBy], references: [id])
+  student    User             @relation("StudentAttendance", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, courseId, classDate])
+  @@index([studentId, courseId])
+  @@index([classDate])
+  @@map("attendances")
+}
+
+// ============================================================
+// 📌 RESTO DEL SCHEMA
+// ============================================================
+
+enum Role {
+  STUDENT
+  TEACHER
+  ADMIN
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  CANCELLED
+  COMPLETED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  OVERDUE
+}
+
+enum WeekDay {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+}
+
+enum ClassType {
+  REGULAR
+  REINFORCEMENT
 }
 
 model User {
@@ -20,6 +91,7 @@ model User {
   isActive           Boolean        @default(true) @map("is_active")
   createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
   recordedAttendance Attendance[]   @relation("TeacherRecordedAttendance")
   attendanceRecords  Attendance[]   @relation("StudentAttendance")
   teachingCourses    Course[]       @relation("TeacherCourses")
@@ -46,6 +118,7 @@ model Course {
   isActive     Boolean       @default(true) @map("is_active")
   createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
   attendance   Attendance[]
   teacher      User          @relation("TeacherCourses", fields: [teacherId], references: [id])
   enrollments  Enrollment[]
@@ -89,26 +162,6 @@ model Enrollment {
   @@map("enrollments")
 }
 
-model Attendance {
-  id         String   @id @default(uuid()) @db.Uuid
-  studentId  String   @map("student_id") @db.Uuid
-  courseId   String   @map("course_id") @db.Uuid
-  classDate  DateTime @map("class_date") @db.Date
-  present    Boolean  @default(false)
-  notes      String?
-  recordedBy String?  @map("recorded_by") @db.Uuid
-  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-  course     Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  recorder   User?    @relation("TeacherRecordedAttendance", fields: [recordedBy], references: [id])
-  student    User     @relation("StudentAttendance", fields: [studentId], references: [id], onDelete: Cascade)
-
-  @@unique([studentId, courseId, classDate])
-  @@index([studentId, courseId])
-  @@index([classDate])
-  @@map("attendances")
-}
-
 model Payment {
   id            String        @id @default(uuid()) @db.Uuid
   studentId     String        @map("student_id") @db.Uuid
@@ -118,8 +171,8 @@ model Payment {
   dueDate       DateTime?     @map("due_date") @db.Date
   status        PaymentStatus @default(PENDING)
   paymentMethod String?       @map("payment_method") @db.VarChar(30)
-  receiptNumber String?       @unique @map("receipt_number") @db.VarChar(50)  // ← Cambiado de 20 a 50
-  notes         String?       @db.Text  // ← Cambiado a Text para textos largos
+  receiptNumber String?       @unique @map("receipt_number") @db.VarChar(50)
+  notes         String?       @db.Text
   recordedBy    String?       @map("recorded_by") @db.Uuid
   createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -163,36 +216,4 @@ model Notification {
 
   @@index([userId, isRead])
   @@map("notifications")
-}
-
-enum Role {
-  STUDENT
-  TEACHER
-  ADMIN
-}
-
-enum EnrollmentStatus {
-  ACTIVE
-  CANCELLED
-  COMPLETED
-}
-
-enum PaymentStatus {
-  PENDING
-  PAID
-  OVERDUE
-}
-
-enum WeekDay {
-  MONDAY
-  TUESDAY
-  WEDNESDAY
-  THURSDAY
-  FRIDAY
-  SATURDAY
-}
-
-enum ClassType {
-  REGULAR
-  REINFORCEMENT
 }

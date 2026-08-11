@@ -38,7 +38,6 @@ export class EnrollmentsController {
     }
   }
 
-  // 🆕 NUEVO: Actualizar estado de matrícula
   async updateEnrollmentStatus(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
@@ -75,7 +74,6 @@ export class EnrollmentsController {
 
   async getMyEnrollments(req: Request, res: Response, next: NextFunction) {
     try {
-      // User is attached by auth middleware
       const studentId = (req as any).user?.id;
 
       if (!studentId) {
@@ -85,6 +83,30 @@ export class EnrollmentsController {
       const result = await service.getMyEnrollments(studentId);
       res.json(result);
     } catch (error) {
+      next(error);
+    }
+  }
+
+  // ✅ NUEVO MÉTODO
+  async getEnrollmentsByStudent(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { studentId } = req.params;
+
+      if (!studentId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Student ID es requerido'
+        });
+      }
+
+      const enrollments = await service.getEnrollmentsByStudent(studentId);
+
+      res.json({
+        success: true,
+        data: enrollments,
+      });
+    } catch (error) {
+      console.error('❌ Error al obtener inscripciones del estudiante:', error);
       next(error);
     }
   }

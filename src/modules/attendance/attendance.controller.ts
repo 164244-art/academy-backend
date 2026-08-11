@@ -1,13 +1,13 @@
-// src\modules\attendance\attendance.controller.ts
+// academy-backend/src/modules/attendance/attendance.controller.ts
+
 import { Request, Response, NextFunction } from 'express';
 import { AttendanceService } from './attendance.service';
+import { RegisterAttendanceDto, AttendanceStatus, AttendanceRecord } from './attendance.types';
 import { AttendancePDFService } from './attendance-pdf.service';
-import { RegisterAttendanceDto } from './attendance.types';
 
 const service = new AttendanceService();
 const pdfService = new AttendancePDFService();
 
-// Helper para obtener el usuario autenticado
 const getAuthUser = (req: Request) => {
   return (req as any).user as
     | {
@@ -21,250 +21,278 @@ const getAuthUser = (req: Request) => {
 };
 
 export class AttendanceController {
-  // Registrar asistencia (Docente)
+  // ============================================================
+  // 📌 POST /api/attendance - Registrar asistencia
+  // ============================================================
   async registerAttendance(req: Request, res: Response, next: NextFunction) {
     try {
       const user = getAuthUser(req);
 
       if (!user) {
-        return res.status(401).json({ message: 'Usuario no autenticado' });
+        return res.status(401).json({
+          success: false,
+          message: 'Usuario no autenticado'
+        });
       }
 
       const { courseId, classDate, records } = req.body;
 
-      // VALIDACIÓN DE FECHA FUTURA
+      console.log('📥 Backend recibió:', JSON.stringify(req.body, null, 2));
+
       if (classDate) {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        const classDateObj = new Date(classDate);
-        classDateObj.setHours(0, 0, 0, 0);
+        const classDateObj = new Date(classDate + 'T00:00:00.000Z');
+        classDateObj.setUTCHours(0, 0, 0, 0);
 
         if (classDateObj > today) {
           return res.status(400).json({
             success: false,
-            message: 'No se puede registrar asistencia en una fecha futura'
+            message: 'No se puede registrar asistencia en una fecha futura',
           });
         }
       }
+
+      if (!records || !Array.isArray(records) || records.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Se requiere al menos un registro de asistencia',
+        });
+      }
+
+      const validStatuses = Object.values(AttendanceStatus);
+      
+      const processedRecords = records.map((record: any) => {
+        let status = record.status;
+        
+        if (status === undefined || status === null) {
+          if (record.present !== undefined) {
+            status = record.present === true ? 'PRESENT' : 'ABSENT';
+            console.log(`🔄 Convertido: present=${record.present} → status=${status}`);
+          } else {
+            status = 'ABSENT';
+          }
+        }
+        
+        if (typeof status === 'string') {
+          status = status.toUpperCase();
+        }
+        
+        if (!validStatuses.includes(status)) {
+          console.warn(`⚠️ Status inválido: "${status}", usando ABSENT`);
+          status = 'ABSENT';
+        }
+        
+        return {
+          studentId: record.studentId,
+          status: status,
+          notes: record.notes || '',
+        };
+      });
+
+      console.log('📤 Records procesados:', JSON.stringify(processedRecords, null, 2));
 
       const teacherId = user.id;
       const data: RegisterAttendanceDto = {
         courseId,
         classDate,
-        records,
+        records: processedRecords,
         recordedBy: teacherId,
       };
 
       const result = await service.registerBatch(data);
+
       res.status(201).json({
-        message: 'Asistencia registrada exitosamente',
+        success: true,
+        message: `Asistencia registrada exitosamente (${result.length} registros)`,
         count: result.length,
         data: result,
       });
     } catch (error) {
+      console.error('❌ Error en registerAttendance:', error);
       next(error);
     }
   }
 
-  // Obtener asistencia por fecha (Docente)
+  // ============================================================
+  // 📌 GET /api/attendance/course/:courseId/date/:date
+  // ============================================================
   async getByDate(req: Request, res: Response, next: NextFunction) {
     try {
       const { courseId, date } = req.params;
-      const result = await service.getByCourseAndDate(courseId, date);
-      res.json(result);
+
+      if (!courseId || !date) {
+        return res.status(400).json({
+          success: false,
+          message: 'courseId y date son requeridos',
+        });
+      }
+
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!dateRegex.test(date)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Formato de fecha inválido. Use YYYY-MM-DD',
+        });
+      }
+
+      const result = await service.getFullRosterWithAttendance(courseId, date);
+      
+      console.log('📊 Datos devueltos al frontend:', JSON.stringify(result.map((r: any) => ({
+        student: r.student?.firstName + ' ' + r.student?.lastName,
+        status: r.status,
+        id: r.studentId
+      })), null, 2));
+
+      const summary = {
+        present: result.filter((r) => r.status === AttendanceStatus.PRESENT).length,
+        permit: result.filter((r) => r.status === AttendanceStatus.PERMIT).length,
+        absent: result.filter((r) => r.status === AttendanceStatus.ABSENT || r.status === null).length,
+        total: result.length,
+      };
+
+      res.json({
+        success: true,
+        data: {
+          students: result,
+          summary,
+          date,
+          courseId,
+        },
+      });
     } catch (error) {
+      console.error('❌ Error al obtener asistencia:', error);
       next(error);
     }
   }
 
-  // Obtener historial de un estudiante específico por ID
+  // ============================================================
+  // 📌 GET /api/attendance/student/:studentId
+  // ============================================================
   async getStudentHistoryById(req: Request, res: Response, next: NextFunction) {
     try {
       const { studentId } = req.params;
       const { courseId } = req.query;
 
       if (!studentId || studentId === 'undefined') {
-        return res.status(400).json({ message: 'Student ID es requerido' });
+        return res.status(400).json({
+          success: false,
+          message: 'Student ID es requerido',
+        });
       }
 
       const history = await service.getStudentHistory(studentId, courseId as string);
 
-      console.log(`📊 Found ${history.length} attendance records for student ${studentId}`);
+      const total = history.length;
+      const present = history.filter((r: AttendanceRecord) => r.status === AttendanceStatus.PRESENT).length;
+      const permits = history.filter((r: AttendanceRecord) => r.status === AttendanceStatus.PERMIT).length;
+      const absences = history.filter((r: AttendanceRecord) => r.status === AttendanceStatus.ABSENT).length;
 
-      res.json(history);
+      res.json({
+        success: true,
+        data: {
+          history,
+          stats: {
+            total,
+            present,
+            permits,
+            absences,
+            attendanceRate: total > 0 ? Number(((present / total) * 100).toFixed(2)) : 0,
+          },
+        },
+      });
     } catch (error) {
       console.error('❌ Error fetching student history:', error);
       next(error);
     }
   }
 
-  // Obtener estadísticas de un estudiante específico por ID
+  // ============================================================
+  // 📌 GET /api/attendance/student/:studentId/stats
+  // ============================================================
   async getStudentStatsById(req: Request, res: Response, next: NextFunction) {
     try {
       const { studentId } = req.params;
       const { courseId } = req.query;
 
       if (!studentId || studentId === 'undefined') {
-        return res.status(400).json({ message: 'Student ID es requerido' });
+        return res.status(400).json({
+          success: false,
+          message: 'Student ID es requerido',
+        });
       }
 
       const stats = await service.getStudentStats(studentId, courseId as string);
 
-      const response = {
-        totalClasses: stats.totalClasses,
-        presentClasses: stats.attendedClasses,
-        absentClasses: stats.absences,
-        attendanceRate: stats.attendancePercentage,
-      };
-
-      console.log(`📈 Calculated stats for student ${studentId}:`, response);
-
-      res.json(response);
+      res.json({
+        success: true,
+        data: {
+          totalClasses: stats.totalClasses,
+          presentClasses: stats.attendedClasses,
+          permits: stats.permits,
+          absentClasses: stats.absences,
+          attendanceRate: stats.attendancePercentage,
+        },
+      });
     } catch (error) {
       console.error('❌ Error calculating student stats:', error);
       next(error);
     }
   }
 
-  // GET /api/attendance/student/:studentId/pdf
-  async downloadStudentPDF(req: Request, res: Response, next: NextFunction) {
-    try {
-      const { studentId } = req.params;
-      const { courseId, startDate, endDate } = req.query;
-      const user = getAuthUser(req);
-
-      if (!user) {
-        return res.status(401).json({ message: 'Usuario no autenticado' });
-      }
-
-      const history = await service.getStudentHistory(studentId, courseId as string);
-
-      let filteredHistory = history;
-      if (startDate || endDate) {
-        filteredHistory = history.filter((record: any) => {
-          const recordDate = new Date(record.classDate);
-          const isAfterStart = !startDate || recordDate >= new Date(startDate as string);
-          const isBeforeEnd = !endDate || recordDate <= new Date(endDate as string);
-          return isAfterStart && isBeforeEnd;
-        });
-      }
-
-      const totalClasses = filteredHistory.length;
-      const presentClasses = filteredHistory.filter((r: any) => r.present).length;
-      const absentClasses = totalClasses - presentClasses;
-      const attendanceRate = totalClasses > 0 ? (presentClasses / totalClasses) * 100 : 0;
-
-      const stats = {
-        totalClasses,
-        presentClasses,
-        absentClasses,
-        attendanceRate: Number(attendanceRate.toFixed(2)),
-      };
-
-      const studentInfo = filteredHistory[0]?.student || {
-        firstName: 'N/A',
-        lastName: '',
-        dni: 'N/A',
-        email: 'N/A',
-      };
-
-      await pdfService.generateAttendancePDF(
-        {
-          student: studentInfo,
-          attendances: filteredHistory,
-          stats,
-          filters: {
-            courseName: filteredHistory[0]?.course?.name,
-            startDate: startDate as string,
-            endDate: endDate as string,
-          },
-          generatedBy: {
-            name: `${user.firstName} ${user.lastName}`,
-            role: user.role,
-          },
-        },
-        res
-      );
-    } catch (error) {
-      console.error('❌ Error generating student PDF:', error);
-      next(error);
-    }
-  }
-
-  // Descargar PDF de reporte general
-  async downloadReportPDF(req: Request, res: Response, next: NextFunction) {
-    try {
-      const { courseId, studentId, startDate, endDate } = req.query;
-      const user = getAuthUser(req);
-
-      if (!user) {
-        return res.status(401).json({ message: 'Usuario no autenticado' });
-      }
-
-      const reportData = await service.getReport({
-        courseId: courseId as string,
-        studentId: studentId as string,
-        startDate: startDate as string,
-        endDate: endDate as string,
-      });
-
-      await pdfService.generateMultiStudentPDF(
-        {
-          attendances: reportData.attendances,
-          stats: reportData.stats,
-          filters: {
-            courseName: reportData.attendances[0]?.course?.name,
-            startDate: startDate as string,
-            endDate: endDate as string,
-          },
-          generatedBy: {
-            name: `${user.firstName} ${user.lastName}`,
-            role: user.role,
-          },
-        },
-        res
-      );
-    } catch (error) {
-      console.error('❌ Error generating report PDF:', error);
-      next(error);
-    }
-  }
-
-  // Estadísticas (Estudiante)
+  // ============================================================
+  // 📌 GET /api/attendance/me/stats
+  // ============================================================
   async getMyStats(req: Request, res: Response, next: NextFunction) {
     try {
       const user = getAuthUser(req);
 
       if (!user) {
-        return res.status(401).json({ message: 'Usuario no autenticado' });
+        return res.status(401).json({
+          success: false,
+          message: 'Usuario no autenticado',
+        });
       }
 
-      const studentId = user.id;
-      const stats = await service.getStudentStats(studentId);
-      res.json(stats);
+      const stats = await service.getStudentStats(user.id);
+
+      res.json({
+        success: true,
+        data: stats,
+      });
     } catch (error) {
       next(error);
     }
   }
 
-  // Historial (Estudiante)
+  // ============================================================
+  // 📌 GET /api/attendance/me/history
+  // ============================================================
   async getMyHistory(req: Request, res: Response, next: NextFunction) {
     try {
       const user = getAuthUser(req);
 
       if (!user) {
-        return res.status(401).json({ message: 'Usuario no autenticado' });
+        return res.status(401).json({
+          success: false,
+          message: 'Usuario no autenticado',
+        });
       }
 
-      const studentId = user.id;
-      const history = await service.getStudentHistory(studentId);
-      res.json(history);
+      const history = await service.getStudentHistory(user.id);
+
+      res.json({
+        success: true,
+        data: history,
+      });
     } catch (error) {
       next(error);
     }
   }
 
-  // Estadísticas generales (Admin/Teacher)
+  // ============================================================
+  // 📌 GET /api/attendance/stats
+  // ============================================================
   async getStats(req: Request, res: Response, next: NextFunction) {
     try {
       const query = req.query as {
@@ -272,14 +300,21 @@ export class AttendanceController {
         startDate?: string;
         endDate?: string;
       };
+
       const stats = await service.getStats(query);
-      res.json(stats);
+
+      res.json({
+        success: true,
+        data: stats,
+      });
     } catch (error) {
       next(error);
     }
   }
 
-  // Reporte detallado (Admin/Teacher)
+  // ============================================================
+  // 📌 GET /api/attendance/report
+  // ============================================================
   async getReport(req: Request, res: Response, next: NextFunction) {
     try {
       const query = req.query as {
@@ -288,10 +323,84 @@ export class AttendanceController {
         startDate?: string;
         endDate?: string;
       };
+
       const report = await service.getReport(query);
-      res.json(report);
+
+      res.json({
+        success: true,
+        data: report,
+      });
     } catch (error) {
       next(error);
+    }
+  }
+
+  // ============================================================
+  // 📌 GET /api/attendance/report/pdf - Descargar PDF
+  // ============================================================
+  async downloadReportPDF(req: Request, res: Response, next: NextFunction) {
+    try {
+      console.log('📄 Solicitud de PDF recibida');
+      
+      const query = req.query as {
+        courseId?: string;
+        studentId?: string;
+        startDate?: string;
+        endDate?: string;
+      };
+
+      // Obtener los datos del reporte
+      const report = await service.getReport(query);
+
+      // Verificar si hay datos
+      if (!report.attendances || report.attendances.length === 0) {
+        console.log('⚠️ No hay datos para generar PDF');
+        return res.status(404).json({
+          success: false,
+          message: 'No hay registros de asistencia para generar el PDF'
+        });
+      }
+
+      console.log(`📄 Generando PDF con ${report.attendances.length} registros`);
+
+      // Obtener información del usuario que genera el PDF
+      const user = getAuthUser(req);
+      const generatedBy = {
+        name: user ? `${user.firstName} ${user.lastName}` : 'Sistema',
+        role: user ? user.role : 'ADMIN'
+      };
+
+      // Preparar datos para el PDF
+      const pdfData = {
+        attendances: report.attendances,
+        stats: {
+          totalClasses: report.stats.totalClasses,
+          presentClasses: report.stats.presentClasses,
+          absentClasses: report.stats.absentClasses,
+          attendanceRate: report.stats.attendanceRate
+        },
+        filters: {
+          courseName: query.courseId ? 'Curso seleccionado' : 'Todos los cursos',
+          startDate: query.startDate || '',
+          endDate: query.endDate || ''
+        },
+        generatedBy: generatedBy
+      };
+
+      // Generar el PDF
+      await pdfService.generateAttendancePDF(pdfData, res);
+
+    } catch (error) {
+      console.error('❌ Error generando PDF:', error);
+      
+      // Si la respuesta ya se envió, no intentar enviar otra
+      if (res.headersSent) return;
+      
+      res.status(500).json({
+        success: false,
+        message: 'Error al generar el PDF',
+        error: error instanceof Error ? error.message : 'Error desconocido'
+      });
     }
   }
 }
